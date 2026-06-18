@@ -1,0 +1,968 @@
+-- ============================================================
+--  NOTFIELD UI – RAYFIELD CLONE
+--  Full rewrite – identical look, feel, and behaviour
+-- ============================================================
+
+local NotField = {}
+NotField.Windows = {}
+NotField.Connections = {}
+
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- ---- Notifications ----
+local NotificationGui
+local Notifications = {}
+
+function NotField:Notify(text, duration)
+    duration = duration or 5
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+    if not NotificationGui then
+        NotificationGui = Instance.new("ScreenGui")
+        NotificationGui.Name = "NotFieldNotifications"
+        NotificationGui.ResetOnSpawn = false
+        NotificationGui.IgnoreGuiInset = true
+        NotificationGui.Parent = playerGui
+    end
+    -- Shift existing notifications up
+    for i, notif in ipairs(Notifications) do
+        notif.Position = UDim2.new(1, -360, 1, -80 - (70 * i))
+    end
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 350, 0, 60)
+    frame.Position = UDim2.new(1, -360, 1, -80)
+    frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    frame.BackgroundTransparency = 1
+    frame.BorderSizePixel = 0
+    frame.Parent = NotificationGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = frame
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -20, 1, 0)
+    label.Position = UDim2.new(0, 10, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextStrokeTransparency = 0.7
+    label.Font = Enum.Font.SourceSansSemibold
+    label.TextSize = 20
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextTransparency = 1
+    label.Parent = frame
+
+    table.insert(Notifications, 1, frame)
+
+    TweenService:Create(frame, TweenInfo.new(0.5), {BackgroundTransparency = 0.4}):Play()
+    TweenService:Create(label, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
+
+    task.delay(duration, function()
+        TweenService:Create(frame, TweenInfo.new(0.5), {BackgroundTransparency = 1}):Play()
+        TweenService:Create(label, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+        task.wait(0.5)
+        frame:Destroy()
+        table.remove(Notifications, table.find(Notifications, frame))
+    end)
+end
+
+-- ---- Config helpers ----
+local function saveConfig(data, folder, file)
+    if not writefile or not makefolder then return end
+    pcall(function()
+        makefolder(folder)
+        writefile(folder .. "/" .. file .. ".json", HttpService:JSONEncode(data))
+    end)
+end
+
+local function loadConfig(folder, file)
+    if not readfile or not isfile then return nil end
+    local path = folder .. "/" .. file .. ".json"
+    if isfile(path) then
+        local success, content = pcall(function() return readfile(path) end)
+        if success and content then
+            local ok, data = pcall(function() return HttpService:JSONDecode(content) end)
+            if ok then return data end
+        end
+    end
+    return nil
+end
+
+-- ---- Main Window Creator ----
+function NotField:CreateWindow(config)
+    config = config or {}
+    local Window = {}
+    local Tabs = {}
+    local ElementRegistry = {}
+    local currentKeyName = config.ToggleUIKeybind or "K"
+    local toggleKeyConn
+    local activeTab = nil
+
+    local screenGui, mainFrame, sidebar, contentFrame, tabContentScrolling
+    local settingsPopup, keybindTextBox
+    local saveEnabled, saveFolder, saveFile, savedData
+    local function saveAll() end -- placeholder
+
+    -- ---- GUI Construction ----
+    local function createMainGUI()
+        screenGui = Instance.new("ScreenGui")
+        screenGui.Name = config.Name or "NotFieldHub"
+        screenGui.ResetOnSpawn = false
+        screenGui.IgnoreGuiInset = true
+        screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+        screenGui.Enabled = false
+
+        -- Main window frame (Rayfield size: 600x400)
+        mainFrame = Instance.new("Frame")
+        mainFrame.Size = UDim2.new(0, 600, 0, 400)
+        mainFrame.Position = UDim2.new(0.5, -300, 0.5, -200)
+        mainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)  -- dark bg
+        mainFrame.BorderSizePixel = 0
+        mainFrame.ClipsDescendants = true
+        mainFrame.Parent = screenGui
+
+        local mainCorner = Instance.new("UICorner")
+        mainCorner.CornerRadius = UDim.new(0, 8)
+        mainCorner.Parent = mainFrame
+
+        -- ---- Open/Close ----
+        local function openGUI()
+            screenGui.Enabled = true
+            mainFrame.Size = UDim2.new(0, 0, 0, 0)
+            mainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+            TweenService:Create(mainFrame, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Size = UDim2.new(0, 600, 0, 400),
+                Position = UDim2.new(0.5, -300, 0.5, -200)
+            }):Play()
+        end
+        local function closeGUI()
+            TweenService:Create(mainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+                Size = UDim2.new(0, 0, 0, 0),
+                Position = UDim2.new(0.5, 0, 0.5, 0)
+            }):Play()
+            task.delay(0.2, function()
+                screenGui.Enabled = false
+            end)
+        end
+
+        -- ---- Keybind ----
+        local function updateToggleKeybind(newKeyName)
+            if toggleKeyConn then toggleKeyConn:Disconnect() toggleKeyConn = nil end
+            local key = Enum.KeyCode[newKeyName]
+            if key then
+                toggleKeyConn = UserInputService.InputBegan:Connect(function(input, processed)
+                    if processed then return end
+                    if input.KeyCode == key then
+                        if screenGui.Enabled then closeGUI() else openGUI() end
+                    end
+                end)
+                currentKeyName = newKeyName
+            else
+                NotField:Notify("Invalid key name: " .. newKeyName)
+                updateToggleKeybind(currentKeyName)
+            end
+        end
+        updateToggleKeybind(currentKeyName)
+
+        -- ---- Title Bar ----
+        local titleBar = Instance.new("Frame")
+        titleBar.Size = UDim2.new(1, 0, 0, 36)
+        titleBar.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+        titleBar.BorderSizePixel = 0
+        titleBar.Parent = mainFrame
+        local titleCorner = Instance.new("UICorner")
+        titleCorner.CornerRadius = UDim.new(0, 8)
+        titleCorner.Parent = titleBar
+
+        local titleLabel = Instance.new("TextLabel")
+        titleLabel.Size = UDim2.new(1, -90, 1, 0)
+        titleLabel.Position = UDim2.new(0, 10, 0, 0)
+        titleLabel.BackgroundTransparency = 1
+        titleLabel.Text = config.Name or "NotField Hub"
+        titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        titleLabel.Font = Enum.Font.SourceSansBold
+        titleLabel.TextSize = 16
+        titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+        titleLabel.Parent = titleBar
+
+        -- Settings gear
+        local settingsButton = Instance.new("TextButton")
+        settingsButton.Size = UDim2.new(0, 30, 0, 30)
+        settingsButton.Position = UDim2.new(1, -60, 0.5, -15)
+        settingsButton.BackgroundTransparency = 1
+        settingsButton.Text = "⚙"
+        settingsButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        settingsButton.Font = Enum.Font.SourceSansBold
+        settingsButton.TextSize = 18
+        settingsButton.Parent = titleBar
+
+        -- Close button
+        local closeButton = Instance.new("TextButton")
+        closeButton.Size = UDim2.new(0, 30, 0, 30)
+        closeButton.Position = UDim2.new(1, -30, 0.5, -15)
+        closeButton.BackgroundTransparency = 1
+        closeButton.Text = "✕"
+        closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        closeButton.Font = Enum.Font.SourceSansBold
+        closeButton.TextSize = 16
+        closeButton.Parent = titleBar
+        closeButton.MouseButton1Click:Connect(closeGUI)
+
+        -- ---- Dragging ----
+        local dragging, dragStart, startPos
+        titleBar.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+                dragStart = input.Position
+                startPos = mainFrame.Position
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then dragging = false end
+                end)
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local delta = input.Position - dragStart
+                mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+            end
+        end)
+
+        -- ---- Sidebar (120px wide) ----
+        sidebar = Instance.new("Frame")
+        sidebar.Size = UDim2.new(0, 120, 1, -36)
+        sidebar.Position = UDim2.new(0, 0, 0, 36)
+        sidebar.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+        sidebar.BorderSizePixel = 0
+        sidebar.Parent = mainFrame
+        local sidebarCorner = Instance.new("UICorner")
+        sidebarCorner.CornerRadius = UDim.new(0, 6)
+        sidebarCorner.Parent = sidebar
+
+        local sidebarList = Instance.new("UIListLayout")
+        sidebarList.Padding = UDim.new(0, 3)
+        sidebarList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        sidebarList.SortOrder = Enum.SortOrder.LayoutOrder
+        sidebarList.Parent = sidebar
+
+        -- ---- Content Area ----
+        contentFrame = Instance.new("Frame")
+        contentFrame.Position = UDim2.new(0, 120, 0, 36)
+        contentFrame.Size = UDim2.new(1, -120, 1, -36)
+        contentFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+        contentFrame.BorderSizePixel = 0
+        contentFrame.ClipsDescendants = true
+        contentFrame.Parent = mainFrame
+        local contentCorner = Instance.new("UICorner")
+        contentCorner.CornerRadius = UDim.new(0, 6)
+        contentCorner.Parent = contentFrame
+
+        tabContentScrolling = Instance.new("ScrollingFrame")
+        tabContentScrolling.Size = UDim2.new(1, 0, 1, 0)
+        tabContentScrolling.CanvasSize = UDim2.new(0, 0, 1, 0)
+        tabContentScrolling.ScrollBarThickness = 4
+        tabContentScrolling.BackgroundTransparency = 1
+        tabContentScrolling.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
+        tabContentScrolling.Parent = contentFrame
+
+        local tabUILayout = Instance.new("UIListLayout")
+        tabUILayout.Padding = UDim.new(0, 6)
+        tabUILayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        tabUILayout.SortOrder = Enum.SortOrder.LayoutOrder
+        tabUILayout.Parent = tabContentScrolling
+
+        -- ---- Canvas updater ----
+        local function updateTabCanvas()
+            local contentHeight = 0
+            for _, child in ipairs(tabContentScrolling:GetChildren()) do
+                if child:IsA("Frame") and child.Visible then
+                    local y = child.AbsolutePosition.Y - tabContentScrolling.AbsolutePosition.Y + child.AbsoluteSize.Y + 10
+                    if y > contentHeight then contentHeight = y end
+                end
+            end
+            tabContentScrolling.CanvasSize = UDim2.new(0, 0, 0, contentHeight)
+        end
+        tabContentScrolling.ChildAdded:Connect(updateTabCanvas)
+        tabContentScrolling.ChildRemoved:Connect(updateTabCanvas)
+
+        -- ---- Settings Popup (keybind changer) ----
+        settingsPopup = Instance.new("Frame")
+        settingsPopup.Size = UDim2.new(0, 200, 0, 70)
+        settingsPopup.Position = UDim2.new(1, -210, 0, 36)
+        settingsPopup.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+        settingsPopup.BorderSizePixel = 0
+        settingsPopup.Visible = false
+        settingsPopup.ZIndex = 5
+        settingsPopup.Parent = mainFrame
+        local settingsPopupCorner = Instance.new("UICorner")
+        settingsPopupCorner.CornerRadius = UDim.new(0, 6)
+        settingsPopupCorner.Parent = settingsPopup
+
+        local keybindLabel = Instance.new("TextLabel")
+        keybindLabel.Size = UDim2.new(1, -10, 0, 20)
+        keybindLabel.Position = UDim2.new(0, 5, 0, 5)
+        keybindLabel.BackgroundTransparency = 1
+        keybindLabel.Text = "Toggle Keybind"
+        keybindLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        keybindLabel.Font = Enum.Font.SourceSansBold
+        keybindLabel.TextSize = 13
+        keybindLabel.TextXAlignment = Enum.TextXAlignment.Left
+        keybindLabel.Parent = settingsPopup
+
+        keybindTextBox = Instance.new("TextBox")
+        keybindTextBox.Size = UDim2.new(1, -10, 0, 25)
+        keybindTextBox.Position = UDim2.new(0, 5, 0, 30)
+        keybindTextBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        keybindTextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+        keybindTextBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+        keybindTextBox.PlaceholderText = "Keybind"
+        keybindTextBox.Text = currentKeyName
+        keybindTextBox.Font = Enum.Font.SourceSans
+        keybindTextBox.TextSize = 14
+        keybindTextBox.ClearTextOnFocus = false
+        keybindTextBox.Parent = settingsPopup
+        local keybindTextBoxCorner = Instance.new("UICorner")
+        keybindTextBoxCorner.CornerRadius = UDim.new(0, 4)
+        keybindTextBoxCorner.Parent = keybindTextBox
+
+        settingsButton.MouseButton1Click:Connect(function()
+            settingsPopup.Visible = not settingsPopup.Visible
+            if settingsPopup.Visible then
+                keybindTextBox.Text = currentKeyName
+                keybindTextBox:CaptureFocus()
+            end
+        end)
+
+        -- Close popup when clicking outside
+        local function closeSettingsOnClick(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                if settingsPopup.Visible then
+                    local pos = input.Position
+                    local absPos = settingsPopup.AbsolutePosition
+                    local size = settingsPopup.AbsoluteSize
+                    if not (pos.X >= absPos.X and pos.X <= absPos.X + size.X and
+                            pos.Y >= absPos.Y and pos.Y <= absPos.Y + size.Y) then
+                        settingsPopup.Visible = false
+                    end
+                end
+            end
+        end
+        UserInputService.InputBegan:Connect(closeSettingsOnClick)
+
+        keybindTextBox.FocusLost:Connect(function()
+            local newKey = keybindTextBox.Text:match("^%s*(.-)%s*$")
+            if newKey ~= "" and Enum.KeyCode[newKey] then
+                updateToggleKeybind(newKey)
+                NotField:Notify("Keybind changed to " .. newKey)
+                if saveEnabled then saveAll() end
+            else
+                keybindTextBox.Text = currentKeyName
+                NotField:Notify("Invalid key, reset to " .. currentKeyName)
+            end
+        end)
+
+        -- ---- Configuration Saving ----
+        local configSaving = config.ConfigurationSaving or {}
+        saveEnabled = configSaving.Enabled or false
+        saveFolder = configSaving.FolderName or "NotFieldHub"
+        saveFile = configSaving.FileName or "Config"
+        savedData = nil
+        if saveEnabled then
+            savedData = loadConfig(saveFolder, saveFile)
+            if savedData and savedData.ToggleKeybind then
+                updateToggleKeybind(savedData.ToggleKeybind)
+            end
+        end
+
+        saveAll = function()
+            if not saveEnabled then return end
+            local data = {}
+            for _, reg in ipairs(ElementRegistry) do
+                data[reg.Id] = reg.GetValue()
+            end
+            data.ToggleKeybind = currentKeyName
+            saveConfig(data, saveFolder, saveFile)
+        end
+
+        if saveEnabled then
+            task.spawn(function()
+                while task.wait(5) do
+                    if screenGui.Enabled then saveAll() end
+                end
+            end)
+        end
+
+        -- ---- Window Methods ----
+        function Window:CreateTab(name)
+            if not name then return nil end
+            local tab = {}
+            local sections = {}
+            local tabButton = Instance.new("TextButton")
+            tabButton.Size = UDim2.new(1, -8, 0, 28)
+            tabButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+            tabButton.BorderSizePixel = 0
+            tabButton.Text = name
+            tabButton.TextColor3 = Color3.fromRGB(200, 200, 200)
+            tabButton.Font = Enum.Font.SourceSans
+            tabButton.TextSize = 14
+            tabButton.Parent = sidebar
+            local tabButtonCorner = Instance.new("UICorner")
+            tabButtonCorner.CornerRadius = UDim.new(0, 4)
+            tabButtonCorner.Parent = tabButton
+
+            tabButton.MouseButton1Click:Connect(function()
+                settingsPopup.Visible = false
+                for _, tb in ipairs(Tabs) do tb.Button.BackgroundColor3 = Color3.fromRGB(30, 30, 30) end
+                tabButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)  -- highlight
+                for _, sec in ipairs(sections) do sec.Frame.Visible = true end
+                for _, otherTab in ipairs(Tabs) do
+                    if otherTab ~= tab then
+                        for _, sec in ipairs(otherTab.Sections) do sec.Frame.Visible = false end
+                    end
+                end
+                activeTab = tab
+                updateTabCanvas()
+            end)
+
+            function tab:CreateSection(name)
+                if not name then return nil end
+                local section = {}
+                local sectionFrame = Instance.new("Frame")
+                sectionFrame.Size = UDim2.new(1, -10, 0, 35)
+                sectionFrame.BackgroundTransparency = 1
+                sectionFrame.Visible = false
+                sectionFrame.Parent = tabContentScrolling
+
+                local sectionLabel = Instance.new("TextLabel")
+                sectionLabel.Size = UDim2.new(1, 0, 0, 20)
+                sectionLabel.BackgroundTransparency = 1
+                sectionLabel.Text = name
+                sectionLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+                sectionLabel.Font = Enum.Font.SourceSansBold
+                sectionLabel.TextSize = 13
+                sectionLabel.Parent = sectionFrame
+                section.Frame = sectionFrame
+                local elementY = 25
+
+                -- ---- TOGGLE ----
+                function section:CreateToggle(config)
+                    config = config or {}
+                    if not config.Name then return nil end
+                    local toggleFrame = Instance.new("Frame")
+                    toggleFrame.Size = UDim2.new(1, 0, 0, 25)
+                    toggleFrame.Position = UDim2.new(0, 0, 0, elementY)
+                    toggleFrame.BackgroundTransparency = 1
+                    toggleFrame.Parent = sectionFrame
+                    elementY = elementY + 27
+
+                    local toggleLabel = Instance.new("TextLabel")
+                    toggleLabel.Size = UDim2.new(0, 150, 1, 0)
+                    toggleLabel.BackgroundTransparency = 1
+                    toggleLabel.Text = config.Name
+                    toggleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    toggleLabel.Font = Enum.Font.SourceSans
+                    toggleLabel.TextSize = 14
+                    toggleLabel.Parent = toggleFrame
+
+                    local toggleButton = Instance.new("Frame")
+                    toggleButton.Size = UDim2.new(0, 42, 0, 22)
+                    toggleButton.Position = UDim2.new(1, -50, 0.5, -11)
+                    toggleButton.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+                    toggleButton.BorderSizePixel = 0
+                    toggleButton.Parent = toggleFrame
+                    local toggleButtonCorner = Instance.new("UICorner")
+                    toggleButtonCorner.CornerRadius = UDim.new(0, 11)
+                    toggleButtonCorner.Parent = toggleButton
+
+                    local toggleKnob = Instance.new("Frame")
+                    toggleKnob.Size = UDim2.new(0, 18, 0, 18)
+                    toggleKnob.Position = UDim2.new(0, 2, 0.5, -9)
+                    toggleKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+                    toggleKnob.BorderSizePixel = 0
+                    toggleKnob.Parent = toggleButton
+                    local toggleKnobCorner = Instance.new("UICorner")
+                    toggleKnobCorner.CornerRadius = UDim.new(0, 9)
+                    toggleKnobCorner.Parent = toggleKnob
+
+                    local elementId = "toggle_" .. config.Name .. "_" .. #ElementRegistry
+                    local enabled = config.Default or false
+                    if savedData and savedData[elementId] ~= nil then enabled = savedData[elementId] end
+
+                    local function updateToggle()
+                        if enabled then
+                            TweenService:Create(toggleButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(0, 170, 255)}):Play()
+                            TweenService:Create(toggleKnob, TweenInfo.new(0.2), {Position = UDim2.new(1, -20, 0.5, -9)}):Play()
+                        else
+                            TweenService:Create(toggleButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(60, 60, 60)}):Play()
+                            TweenService:Create(toggleKnob, TweenInfo.new(0.2), {Position = UDim2.new(0, 2, 0.5, -9)}):Play()
+                        end
+                        if config.Callback then pcall(config.Callback, enabled) end
+                    end
+                    updateToggle()
+
+                    toggleButton.InputBegan:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                            enabled = not enabled
+                            updateToggle()
+                            if saveEnabled then saveAll() end
+                        end
+                    end)
+
+                    table.insert(ElementRegistry, {Id = elementId, GetValue = function() return enabled end})
+                    sectionFrame.Size = UDim2.new(1, -10, 0, elementY + 5)
+                    updateTabCanvas()
+                    return {
+                        SetValue = function(self, val) enabled = val; updateToggle() end,
+                        GetValue = function() return enabled end
+                    }
+                end
+
+                -- ---- SLIDER ----
+                function section:CreateSlider(config)
+                    config = config or {}
+                    if not config.Name then return nil end
+                    local sliderFrame = Instance.new("Frame")
+                    sliderFrame.Size = UDim2.new(1, 0, 0, 40)
+                    sliderFrame.Position = UDim2.new(0, 0, 0, elementY)
+                    sliderFrame.BackgroundTransparency = 1
+                    sliderFrame.Parent = sectionFrame
+                    elementY = elementY + 42
+
+                    local sliderLabel = Instance.new("TextLabel")
+                    sliderLabel.Size = UDim2.new(1, 0, 0, 15)
+                    sliderLabel.BackgroundTransparency = 1
+                    sliderLabel.Text = config.Name
+                    sliderLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    sliderLabel.Font = Enum.Font.SourceSans
+                    sliderLabel.TextSize = 14
+                    sliderLabel.Parent = sliderFrame
+
+                    local sliderValue = Instance.new("TextLabel")
+                    sliderValue.Size = UDim2.new(0, 60, 0, 15)
+                    sliderValue.Position = UDim2.new(1, -60, 0, 0)
+                    sliderValue.BackgroundTransparency = 1
+                    sliderValue.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    sliderValue.Font = Enum.Font.SourceSans
+                    sliderValue.TextSize = 13
+                    sliderValue.TextXAlignment = Enum.TextXAlignment.Right
+                    sliderValue.Parent = sliderFrame
+
+                    local sliderBg = Instance.new("Frame")
+                    sliderBg.Size = UDim2.new(1, 0, 0, 6)
+                    sliderBg.Position = UDim2.new(0, 0, 0, 20)
+                    sliderBg.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+                    sliderBg.BorderSizePixel = 0
+                    sliderBg.Parent = sliderFrame
+                    local sliderBgCorner = Instance.new("UICorner")
+                    sliderBgCorner.CornerRadius = UDim.new(0, 3)
+                    sliderBgCorner.Parent = sliderBg
+
+                    local sliderFill = Instance.new("Frame")
+                    sliderFill.Size = UDim2.new(0, 0, 1, 0)
+                    sliderFill.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+                    sliderFill.BorderSizePixel = 0
+                    sliderFill.Parent = sliderBg
+                    local sliderFillCorner = Instance.new("UICorner")
+                    sliderFillCorner.CornerRadius = UDim.new(0, 3)
+                    sliderFillCorner.Parent = sliderFill
+
+                    local sliderGrabber = Instance.new("Frame")
+                    sliderGrabber.Size = UDim2.new(0, 12, 0, 16)
+                    sliderGrabber.Position = UDim2.new(0, -6, 0.5, -8)
+                    sliderGrabber.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+                    sliderGrabber.BorderSizePixel = 0
+                    sliderGrabber.Parent = sliderBg
+                    local sliderGrabberCorner = Instance.new("UICorner")
+                    sliderGrabberCorner.CornerRadius = UDim.new(0, 4)
+                    sliderGrabberCorner.Parent = sliderGrabber
+
+                    local min = config.Min or 0
+                    local max = config.Max or 100
+                    local value = config.Default or min
+                    local elementId = "slider_" .. config.Name .. "_" .. #ElementRegistry
+                    if savedData and savedData[elementId] ~= nil then value = savedData[elementId] end
+                    local step = config.Step or (max - min) / 100
+
+                    local function updateSlider()
+                        local percent = math.clamp((value - min) / (max - min), 0, 1)
+                        sliderFill.Size = UDim2.new(percent, 0, 1, 0)
+                        sliderGrabber.Position = UDim2.new(percent, -6, 0.5, -8)
+                        sliderValue.Text = tostring(math.round(value * 100) / 100)
+                        if config.Callback then pcall(config.Callback, value) end
+                    end
+                    updateSlider()
+
+                    local draggingSlider = false
+                    sliderGrabber.InputBegan:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 then draggingSlider = true end
+                    end)
+                    UserInputService.InputEnded:Connect(function(input)
+                        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                            if draggingSlider then
+                                draggingSlider = false
+                                if saveEnabled then saveAll() end
+                            end
+                        end
+                    end)
+                    UserInputService.InputChanged:Connect(function(input)
+                        if draggingSlider and input.UserInputType == Enum.UserInputType.MouseMovement then
+                            local relativeX = math.clamp(input.Position.X - sliderBg.AbsolutePosition.X, 0, sliderBg.AbsoluteSize.X)
+                            local percent = relativeX / sliderBg.AbsoluteSize.X
+                            value = min + (max - min) * percent
+                            if step then value = min + math.floor((value - min) / step + 0.5) * step end
+                            updateSlider()
+                        end
+                    end)
+
+                    table.insert(ElementRegistry, {Id = elementId, GetValue = function() return value end})
+                    sectionFrame.Size = UDim2.new(1, -10, 0, elementY + 5)
+                    updateTabCanvas()
+                    return {
+                        SetValue = function(self, val) value = val; updateSlider() end,
+                        GetValue = function() return value end
+                    }
+                end
+
+                -- ---- TEXTBOX ----
+                function section:CreateTextBox(config)
+                    config = config or {}
+                    if not config.Name then return nil end
+                    local textBoxFrame = Instance.new("Frame")
+                    textBoxFrame.Size = UDim2.new(1, 0, 0, 30)
+                    textBoxFrame.Position = UDim2.new(0, 0, 0, elementY)
+                    textBoxFrame.BackgroundTransparency = 1
+                    textBoxFrame.Parent = sectionFrame
+                    elementY = elementY + 32
+
+                    local label = Instance.new("TextLabel")
+                    label.Size = UDim2.new(0, 120, 0, 20)
+                    label.BackgroundTransparency = 1
+                    label.Text = config.Name
+                    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    label.Font = Enum.Font.SourceSans
+                    label.TextSize = 14
+                    label.Parent = textBoxFrame
+
+                    local textBox = Instance.new("TextBox")
+                    textBox.Size = UDim2.new(0, 150, 0, 22)
+                    textBox.Position = UDim2.new(1, -160, 0, 0)
+                    textBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+                    textBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    textBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+                    textBox.PlaceholderText = config.Placeholder or ""
+                    textBox.Font = Enum.Font.SourceSans
+                    textBox.TextSize = 14
+                    textBox.ClearTextOnFocus = false
+                    textBox.Parent = textBoxFrame
+                    local textBoxCorner = Instance.new("UICorner")
+                    textBoxCorner.CornerRadius = UDim.new(0, 4)
+                    textBoxCorner.Parent = textBox
+
+                    local elementId = "textbox_" .. config.Name .. "_" .. #ElementRegistry
+                    if savedData and savedData[elementId] ~= nil then
+                        textBox.Text = savedData[elementId]
+                    else
+                        textBox.Text = config.Default or ""
+                    end
+                    if config.Callback then
+                        textBox.FocusLost:Connect(function()
+                            pcall(config.Callback, textBox.Text)
+                            if saveEnabled then saveAll() end
+                        end)
+                    end
+                    table.insert(ElementRegistry, {Id = elementId, GetValue = function() return textBox.Text end})
+                    sectionFrame.Size = UDim2.new(1, -10, 0, elementY + 5)
+                    updateTabCanvas()
+                    return {
+                        SetValue = function(self, val) textBox.Text = val end,
+                        GetValue = function() return textBox.Text end
+                    }
+                end
+
+                -- ---- DROPDOWN ----
+                function section:CreateDropdown(config)
+                    config = config or {}
+                    if not config.Name then return nil end
+                    local dropdownFrame = Instance.new("Frame")
+                    dropdownFrame.Size = UDim2.new(1, 0, 0, 30)
+                    dropdownFrame.Position = UDim2.new(0, 0, 0, elementY)
+                    dropdownFrame.BackgroundTransparency = 1
+                    dropdownFrame.Parent = sectionFrame
+                    elementY = elementY + 32
+
+                    local dropdownLabel = Instance.new("TextLabel")
+                    dropdownLabel.Size = UDim2.new(0, 120, 0, 20)
+                    dropdownLabel.BackgroundTransparency = 1
+                    dropdownLabel.Text = config.Name
+                    dropdownLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    dropdownLabel.Font = Enum.Font.SourceSans
+                    dropdownLabel.TextSize = 14
+                    dropdownLabel.Parent = dropdownFrame
+
+                    local optionsList = config.Options or {}
+                    local selected = config.Default or (optionsList[1] or "")
+                    local elementId = "dropdown_" .. config.Name .. "_" .. #ElementRegistry
+                    if savedData and savedData[elementId] ~= nil and table.find(optionsList, savedData[elementId]) then
+                        selected = savedData[elementId]
+                    end
+                    local open = false
+
+                    local button = Instance.new("TextButton")
+                    button.Size = UDim2.new(0, 150, 0, 22)
+                    button.Position = UDim2.new(1, -160, 0, 0)
+                    button.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+                    button.BorderSizePixel = 0
+                    button.Text = "  " .. selected .. "  ▼"
+                    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    button.Font = Enum.Font.SourceSans
+                    button.TextSize = 13
+                    button.TextXAlignment = Enum.TextXAlignment.Left
+                    button.Parent = dropdownFrame
+                    local buttonCorner = Instance.new("UICorner")
+                    buttonCorner.CornerRadius = UDim.new(0, 4)
+                    buttonCorner.Parent = button
+
+                    local optionsFrame = Instance.new("Frame")
+                    optionsFrame.Size = UDim2.new(0, 150, 0, 0)
+                    optionsFrame.Position = UDim2.new(1, -160, 0, 22)
+                    optionsFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+                    optionsFrame.BorderSizePixel = 0
+                    optionsFrame.ClipsDescendants = true
+                    optionsFrame.Visible = false
+                    optionsFrame.Parent = dropdownFrame
+                    local optionsFrameCorner = Instance.new("UICorner")
+                    optionsFrameCorner.CornerRadius = UDim.new(0, 4)
+                    optionsFrameCorner.Parent = optionsFrame
+
+                    local listLayout = Instance.new("UIListLayout")
+                    listLayout.Parent = optionsFrame
+
+                    for _, opt in ipairs(optionsList) do
+                        local optBtn = Instance.new("TextButton")
+                        optBtn.Size = UDim2.new(1, 0, 0, 22)
+                        optBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+                        optBtn.BorderSizePixel = 0
+                        optBtn.Text = "  " .. opt
+                        optBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                        optBtn.Font = Enum.Font.SourceSans
+                        optBtn.TextSize = 13
+                        optBtn.TextXAlignment = Enum.TextXAlignment.Left
+                        optBtn.Parent = optionsFrame
+                        local optCorner = Instance.new("UICorner")
+                        optCorner.CornerRadius = UDim.new(0, 4)
+                        optCorner.Parent = optBtn
+                        optBtn.MouseButton1Click:Connect(function()
+                            selected = opt
+                            button.Text = "  " .. opt .. "  ▼"
+                            open = false
+                            optionsFrame.Visible = false
+                            if config.Callback then pcall(config.Callback, opt) end
+                            if saveEnabled then saveAll() end
+                        end)
+                    end
+                    optionsFrame.Size = UDim2.new(0, 150, 0, #optionsList * 22)
+
+                    button.MouseButton1Click:Connect(function()
+                        open = not open
+                        optionsFrame.Visible = open
+                    end)
+
+                    table.insert(ElementRegistry, {Id = elementId, GetValue = function() return selected end})
+                    sectionFrame.Size = UDim2.new(1, -10, 0, elementY + 5)
+                    updateTabCanvas()
+                    return {
+                        SetValue = function(self, val)
+                            if table.find(optionsList, val) then
+                                selected = val
+                                button.Text = "  " .. val .. "  ▼"
+                                if config.Callback then pcall(config.Callback, val) end
+                            end
+                        end,
+                        GetValue = function() return selected end
+                    }
+                end
+
+                -- ---- BUTTON ----
+                function section:CreateButton(config)
+                    config = config or {}
+                    if not config.Name then return nil end
+                    local buttonFrame = Instance.new("Frame")
+                    buttonFrame.Size = UDim2.new(1, 0, 0, 28)
+                    buttonFrame.Position = UDim2.new(0, 0, 0, elementY)
+                    buttonFrame.BackgroundTransparency = 1
+                    buttonFrame.Parent = sectionFrame
+                    elementY = elementY + 30
+
+                    local btn = Instance.new("TextButton")
+                    btn.Size = UDim2.new(0, 120, 0, 24)
+                    btn.Position = UDim2.new(0.5, -60, 0, 0)
+                    btn.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+                    btn.BorderSizePixel = 0
+                    btn.Text = config.Name
+                    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    btn.Font = Enum.Font.SourceSansBold
+                    btn.TextSize = 14
+                    btn.Parent = buttonFrame
+                    local btnCorner = Instance.new("UICorner")
+                    btnCorner.CornerRadius = UDim.new(0, 4)
+                    btnCorner.Parent = btn
+
+                    if config.Callback then
+                        btn.MouseButton1Click:Connect(function()
+                            pcall(config.Callback)
+                        end)
+                    end
+
+                    sectionFrame.Size = UDim2.new(1, -10, 0, elementY + 5)
+                    updateTabCanvas()
+                    return {}
+                end
+
+                table.insert(sections, section)
+                return section
+            end
+
+            tab.Sections = sections
+            tab.Button = tabButton
+            table.insert(Tabs, tab)
+            return tab
+        end
+
+        -- ---- Discord notify ----
+        if config.Discord and config.Discord.Enabled then
+            NotField:Notify("Join Discord: discord.gg/" .. config.Discord.Invite, 10)
+        end
+
+        screenGui.Destroying:Connect(function()
+            if saveEnabled then saveAll() end
+        end)
+
+        table.insert(NotField.Windows, Window)
+        openGUI()
+    end -- end createMainGUI
+
+    -- ---- Key System (optional) ----
+    if config.KeySystem then
+        local keySettings = config.KeySettings or {}
+        local keyTitle = keySettings.Title or "Key System"
+        local keySubtitle = keySettings.Subtitle or "Enter your key"
+        local keyNote = keySettings.Note or "No method provided"
+        local keyFile = keySettings.FileName or "NotFieldKey"
+        local saveKey = keySettings.SaveKey ~= false
+        local validKeys = keySettings.Key or {}
+
+        if saveKey then
+            local savedKey = loadConfig("NotFieldKeys", keyFile)
+            if savedKey and savedKey.key and table.find(validKeys, savedKey.key) then
+                createMainGUI()
+                return Window
+            end
+        end
+
+        -- Show key request GUI
+        local keyGui = Instance.new("ScreenGui")
+        keyGui.Name = "KeySystem"
+        keyGui.ResetOnSpawn = false
+        keyGui.IgnoreGuiInset = true
+        keyGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+        local keyFrame = Instance.new("Frame")
+        keyFrame.Size = UDim2.new(0, 300, 0, 180)
+        keyFrame.Position = UDim2.new(0.5, -150, 0.5, -90)
+        keyFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+        keyFrame.BorderSizePixel = 0
+        keyFrame.Parent = keyGui
+        local keyCorner = Instance.new("UICorner")
+        keyCorner.CornerRadius = UDim.new(0, 8)
+        keyCorner.Parent = keyFrame
+
+        local titleLabel = Instance.new("TextLabel")
+        titleLabel.Size = UDim2.new(1, 0, 0, 30)
+        titleLabel.BackgroundTransparency = 1
+        titleLabel.Text = keyTitle
+        titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        titleLabel.Font = Enum.Font.SourceSansBold
+        titleLabel.TextSize = 20
+        titleLabel.Parent = keyFrame
+
+        local subLabel = Instance.new("TextLabel")
+        subLabel.Size = UDim2.new(1, -20, 0, 20)
+        subLabel.Position = UDim2.new(0, 10, 0, 35)
+        subLabel.BackgroundTransparency = 1
+        subLabel.Text = keySubtitle
+        subLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        subLabel.Font = Enum.Font.SourceSans
+        subLabel.TextSize = 14
+        subLabel.Parent = keyFrame
+
+        local noteLabel = Instance.new("TextLabel")
+        noteLabel.Size = UDim2.new(1, -20, 0, 20)
+        noteLabel.Position = UDim2.new(0, 10, 0, 55)
+        noteLabel.BackgroundTransparency = 1
+        noteLabel.Text = keyNote
+        noteLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+        noteLabel.Font = Enum.Font.SourceSans
+        noteLabel.TextSize = 12
+        noteLabel.Parent = keyFrame
+
+        local textBox = Instance.new("TextBox")
+        textBox.Size = UDim2.new(1, -40, 0, 30)
+        textBox.Position = UDim2.new(0, 20, 0, 85)
+        textBox.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+        textBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+        textBox.PlaceholderText = "Key"
+        textBox.Font = Enum.Font.SourceSans
+        textBox.TextSize = 16
+        textBox.Parent = keyFrame
+        local textCorner = Instance.new("UICorner")
+        textCorner.CornerRadius = UDim.new(0, 4)
+        textCorner.Parent = textBox
+
+        local submitBtn = Instance.new("TextButton")
+        submitBtn.Size = UDim2.new(0, 100, 0, 30)
+        submitBtn.Position = UDim2.new(0.5, -50, 0, 125)
+        submitBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+        submitBtn.Text = "Submit"
+        submitBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        submitBtn.Font = Enum.Font.SourceSansBold
+        submitBtn.TextSize = 16
+        submitBtn.Parent = keyFrame
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 4)
+        btnCorner.Parent = submitBtn
+
+        local wrongLabel = Instance.new("TextLabel")
+        wrongLabel.Size = UDim2.new(1, 0, 0, 20)
+        wrongLabel.Position = UDim2.new(0, 0, 0, 160)
+        wrongLabel.BackgroundTransparency = 1
+        wrongLabel.Text = ""
+        wrongLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
+        wrongLabel.Font = Enum.Font.SourceSans
+        wrongLabel.TextSize = 12
+        wrongLabel.Parent = keyFrame
+
+        submitBtn.MouseButton1Click:Connect(function()
+            local entered = textBox.Text
+            if table.find(validKeys, entered) then
+                keyGui:Destroy()
+                if saveKey then
+                    saveConfig({key = entered}, "NotFieldKeys", keyFile)
+                end
+                createMainGUI()
+            else
+                wrongLabel.Text = "Invalid key!"
+            end
+        end)
+
+        return nil
+    else
+        createMainGUI()
+    end
+
+    return Window
+end
+
+return NotField
